@@ -3,7 +3,7 @@
 #
 # export.py - Exports enumerated data for reachable nodes into a JSON file.
 #
-# Copyright (c) 2014 Addy Yeow Chin Heng <ayeowch@gmail.com>
+# Copyright (c) Addy Yeow Chin Heng <ayeowch@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -49,7 +49,7 @@ def get_row(node):
     """
     Returns enumerated row data from Redis for the specified node.
     """
-    # address, port, version, user_agent, timestamp
+    # address, port, version, user_agent, timestamp, services
     node = eval(node)
     address = node[0]
     port = node[1]
@@ -66,7 +66,7 @@ def get_row(node):
     geoip = REDIS_CONN.hget('resolve:{}'.format(address), 'geoip')
     if geoip is None:
         # city, country, latitude, longitude, timezone, asn, org
-        geoip = (None, None, None, None, None, None, None)
+        geoip = (None, None, 0.0, 0.0, None, None, None)
     else:
         geoip = eval(geoip)
 
@@ -85,11 +85,11 @@ def export_nodes(nodes, timestamp):
         rows.append(row)
     end = time.time()
     elapsed = end - start
-    logging.info("Elapsed: {}".format(elapsed))
+    logging.info("Elapsed: %d", elapsed)
 
     dump = os.path.join(SETTINGS['export_dir'], "{}.json".format(timestamp))
     open(dump, 'w').write(json.dumps(rows, encoding="latin-1"))
-    logging.info("Wrote {}".format(dump))
+    logging.info("Wrote %s", dump)
 
 
 def init_settings(argv):
@@ -125,7 +125,7 @@ def main(argv):
                         filename=SETTINGS['logfile'],
                         filemode='w')
     print("Writing output to {}, press CTRL+C to terminate..".format(
-          SETTINGS['logfile']))
+        SETTINGS['logfile']))
 
     pubsub = REDIS_CONN.pubsub()
     pubsub.subscribe('resolve')
@@ -134,9 +134,9 @@ def main(argv):
         # and GeoIP data for all reachable nodes.
         if msg['channel'] == 'resolve' and msg['type'] == 'message':
             timestamp = int(msg['data'])  # From ping.py's 'snapshot' message
-            logging.info("Timestamp: {}".format(timestamp))
+            logging.info("Timestamp: %d", timestamp)
             nodes = REDIS_CONN.smembers('opendata')
-            logging.info("Nodes: {}".format(len(nodes)))
+            logging.info("Nodes: %d", len(nodes))
             export_nodes(nodes, timestamp)
             REDIS_CONN.publish('export', timestamp)
 

@@ -1,3 +1,4 @@
+*.conf
 *.log
 *.out
 *.pyc
@@ -6,4 +7,4 @@ clean.sh
 data/*
 geoip/*.dat
 rsync.sh
-test/*
+tests/*

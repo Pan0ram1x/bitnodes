@@ -1,0 +1,10 @@
+[resolve]
+
+# Logfile
+logfile = resolve.log
+
+# Print debug output
+debug = True
+
+# Redis TTL for cached hostname and GeoIP data
+ttl = 86400

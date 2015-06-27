@@ -1,0 +1,87 @@
+[crawl]
+
+# Logfile
+logfile = crawl.log
+
+# List of DNS seeders to get a subset of reachable nodes
+seeders =
+    seed.bitcoin.sipa.be
+    dnsseed.bluematt.me
+    dnsseed.bitcoin.dashjr.org
+    seed.bitcoinstats.com
+    seed.bitnodes.io
+    bitseed.xf2.org
+
+# Number of concurrent workers (greenlets)
+workers = 400
+
+# Print debug output
+debug = False
+
+# Public IP address for network interface
+source_address = 0.0.0.0
+
+# Protocol version to use for outgoing version message
+protocol_version = 70002
+
+# User agent (BIP 0014) to use for outgoing version message
+# -----------------------------------------------------------------------------
+#                                 NOTE TO USERS
+# Please consider changing the user agent before running an instance of this
+# crawler. This is so that users will not confuse your crawler with another
+# instance that is already running and generating data for the project.
+# -----------------------------------------------------------------------------
+user_agent = /getaddr.bitnodes.io:0.1/
+
+# Services to use for outgoing network address message
+services = 0
+
+# Set to 1 to receive all txs
+relay = 0
+
+# Socket timeout
+socket_timeout = 10
+
+# Run cron tasks every given interval
+cron_delay = 10
+
+# Max. age for peering node to be included in crawl set
+max_age = 86400
+
+# Attempt to establish connection with IPv6 nodes
+ipv6 = True
+
+# List of excluded IPv4 networks
+exclude_ipv4_networks =
+    0.0.0.0/8
+    10.0.0.0/8
+    100.64.0.0/10
+    127.0.0.0/8
+    169.254.0.0/16
+    172.16.0.0/12
+    192.0.0.0/24
+    192.0.2.0/24
+    192.168.0.0/16
+    192.88.99.0/24
+    198.18.0.0/15
+    198.51.100.0/24
+    203.0.113.0/24
+    224.0.0.0/4
+    240.0.0.0/4
+    255.255.255.255/32
+    13.0.0.0/10
+    13.104.0.0/14
+    13.64.0.0/11
+    13.96.0.0/13
+    192.1.1.0/24
+    25.0.0.0/8
+    3.0.0.0/8
+    46.105.210.0/24
+    11.0.0.0/8
+
+# List of excluded IPv6 networks
+exclude_ipv6_networks =
+    2607:f0d0:1c01:53::0/112
+
+# Relative path to directory containing timestamp-prefixed JSON crawl files
+crawl_dir = data/crawl

@@ -3,7 +3,7 @@
 #
 # resolve.py - Resolves hostname and GeoIP data for each reachable node.
 #
-# Copyright (c) 2014 Addy Yeow Chin Heng <ayeowch@gmail.com>
+# Copyright (c) Addy Yeow Chin Heng <ayeowch@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -28,19 +28,24 @@
 Resolves hostname and GeoIP data for each reachable node.
 """
 
-from decimal import Decimal
-from gevent import socket
+from gevent import monkey
+monkey.patch_all()
+
 import gevent
+import gevent.pool
 import logging
 import os
 import pygeoip
-import random
 import redis
 import redis.connection
+import socket
 import sys
+import time
+from collections import defaultdict
 from ConfigParser import ConfigParser
+from decimal import Decimal
 
-redis.connection.socket = socket
+redis.connection.socket = gevent.socket
 
 # Redis connection setup
 REDIS_SOCKET = os.environ.get('REDIS_SOCKET', "/tmp/redis.sock")
@@ -54,88 +59,100 @@ GEOIP6 = pygeoip.GeoIP("geoip/GeoLiteCityv6.dat", pygeoip.MMAP_CACHE)
 ASN4 = pygeoip.GeoIP("geoip/GeoIPASNum.dat", pygeoip.MMAP_CACHE)
 ASN6 = pygeoip.GeoIP("geoip/GeoIPASNumv6.dat", pygeoip.MMAP_CACHE)
 
-# Worker (resolver) status
-RESOLVED = 2
-FAILED = 1  # Failed socket.gethostbyaddr()
-
 SETTINGS = {}
 
 
-def resolve_nodes(nodes):
+class Resolve(object):
     """
-    Spawns workers to resolve hostname and GeoIP data for all nodes.
+    Implements hostname and GeoIP resolver.
     """
-    addresses_1 = []  # Resolve hostname
-    addresses_2 = []  # Resolve GeoIP data
+    def __init__(self, addresses):
+        self.addresses = addresses
+        self.resolved = defaultdict(dict)
+        self.redis_pipe = REDIS_CONN.pipeline()
 
-    idx = 0
-    for node in nodes:
-        node = eval(node)
-        address = node[0]
-        if not REDIS_CONN.hexists('resolve:{}'.format(address), 'hostname'):
-            if idx < 1000:
-                addresses_1.append(address)
-            idx += 1
-        if not REDIS_CONN.hexists('resolve:{}'.format(address), 'geoip'):
-            addresses_2.append(address)
+    def resolve_addresses(self):
+        """
+        Resolves hostname for up to 1000 new addresses and GeoIP data for all
+        addresses.
+        """
+        start = time.time()
 
-    logging.info("Hostname: {} addresses".format(len(addresses_1)))
-    workers = [gevent.spawn(set_hostname, address) for address in addresses_1]
-    gevent.joinall(workers, timeout=15)
+        idx = 0
+        for address in self.addresses:
+            key = 'resolve:{}'.format(address)
 
-    (resolved, failed, aborted) = status(workers)
-    logging.info("Hostname: {} resolved, {} failed, {} aborted".format(
-        resolved, failed, aborted))
+            if not REDIS_CONN.hexists(key, 'geoip'):
+                self.resolved['geoip'][address] = None
 
-    logging.info("GeoIP: {} addresses".format(len(addresses_2)))
-    workers = [gevent.spawn(set_geoip, address) for address in addresses_2]
-    gevent.joinall(workers, timeout=15)
+            if not REDIS_CONN.hexists(key, 'hostname'):
+                if idx < 1000:
+                    self.resolved['hostname'][address] = None
+                idx += 1
+        self.redis_pipe.execute()
 
-    (resolved, failed, aborted) = status(workers)
-    logging.info("GeoIP: {} resolved, {} failed, {} aborted".format(
-        resolved, failed, aborted))
+        logging.info("GeoIP: %d", len(self.resolved['geoip']))
+        self.resolve_geoip()
 
+        logging.info("Hostname: %d", len(self.resolved['hostname']))
+        self.resolve_hostname()
 
-def status(workers):
-    """
-    Summarizes resolve status for the spawned workers after a set timeout.
-    """
-    resolved = 0
-    failed = 0
-    aborted = 0  # Timed out
+        self.cache_resolved()
 
-    for worker in workers:
-        if worker.value == RESOLVED:
-            resolved += 1
-        elif worker.value == FAILED:
-            failed += 1
-        else:
-            aborted += 1
+        end = time.time()
+        elapsed = end - start
+        logging.info("Elapsed: %d", elapsed)
 
-    return (resolved, failed, aborted)
+    def cache_resolved(self):
+        """
+        Caches resolved addresses in Redis.
+        """
+        resolved = 0
+        for address, geoip in self.resolved['geoip'].iteritems():
+            if geoip[1] or geoip[5]:
+                resolved += 1  # country/asn is set
+            key = 'resolve:{}'.format(address)
+            self.redis_pipe.hset(key, 'geoip', geoip)
+            self.redis_pipe.expire(key, SETTINGS['ttl'])
+            logging.debug("%s geoip: %s", key, geoip)
+        logging.info("GeoIP: %d resolved", resolved)
 
+        resolved = 0
+        for address, hostname in self.resolved['hostname'].iteritems():
+            if hostname != address:
+                resolved += 1
+            key = 'resolve:{}'.format(address)
+            self.redis_pipe.hset(key, 'hostname', hostname)
+            self.redis_pipe.expire(key, SETTINGS['ttl'])
+            logging.debug("%s hostname: %s", key, hostname)
+        logging.info("Hostname: %d resolved", resolved)
 
-def set_data(address, field, value):
-    """
-    Stores data for an address in Redis with a randomize TTL randomize to
-    distribute expiring keys across multiple times.
-    """
-    ttl = random.randint(SETTINGS['min_ttl'], SETTINGS['max_ttl'])
-    redis_pipe = REDIS_CONN.pipeline()
-    redis_pipe.hset('resolve:{}'.format(address), field, value)
-    redis_pipe.expire('resolve:{}'.format(address), ttl)
-    redis_pipe.execute()
+        self.redis_pipe.execute()
 
+    def resolve_geoip(self):
+        """
+        Resolves GeoIP data for the unresolved addresses.
+        """
+        for address in self.resolved['geoip']:
+            geoip = raw_geoip(address)
+            self.resolved['geoip'][address] = geoip
 
-def set_hostname(address):
-    """
-    Caches hostname for the specified address in Redis.
-    """
-    hostname = raw_hostname(address)
-    set_data(address, 'hostname', hostname)
-    if hostname != address:
-        return RESOLVED
-    return FAILED
+    def resolve_hostname(self):
+        """
+        Concurrently resolves hostname for the unresolved addresses.
+        """
+        pool = gevent.pool.Pool(len(self.resolved['hostname']))
+        with gevent.Timeout(15, False):
+            for address in self.resolved['hostname']:
+                pool.spawn(self.set_hostname, address)
+        pool.join()
+
+    def set_hostname(self, address):
+        """
+        Resolves hostname for the specified address.
+        """
+        hostname = raw_hostname(address)
+        self.resolved['hostname'][address] = hostname
 
 
 def raw_hostname(address):
@@ -146,17 +163,8 @@ def raw_hostname(address):
     try:
         hostname = socket.gethostbyaddr(address)[0]
     except (socket.gaierror, socket.herror) as err:
-        logging.debug("{}: {}".format(address, err))
+        logging.debug("%s: %s", address, err)
     return hostname
-
-
-def set_geoip(address):
-    """
-    Caches GeoIP data for the specified address in Redis.
-    """
-    geoip = raw_geoip(address)
-    set_data(address, 'geoip', geoip)
-    return RESOLVED
 
 
 def raw_geoip(address):
@@ -165,8 +173,8 @@ def raw_geoip(address):
     """
     city = None
     country = None
-    latitude = None
-    longitude = None
+    latitude = 0.0
+    longitude = 0.0
     timezone = None
     asn = None
     org = None
@@ -206,8 +214,7 @@ def init_settings(argv):
     conf.read(argv[1])
     SETTINGS['logfile'] = conf.get('resolve', 'logfile')
     SETTINGS['debug'] = conf.getboolean('resolve', 'debug')
-    SETTINGS['min_ttl'] = conf.getint('resolve', 'min_ttl')
-    SETTINGS['max_ttl'] = conf.getint('resolve', 'max_ttl')
+    SETTINGS['ttl'] = conf.getint('resolve', 'ttl')
 
 
 def main(argv):
@@ -230,7 +237,7 @@ def main(argv):
                         filename=SETTINGS['logfile'],
                         filemode='w')
     print("Writing output to {}, press CTRL+C to terminate..".format(
-          SETTINGS['logfile']))
+        SETTINGS['logfile']))
 
     pubsub = REDIS_CONN.pubsub()
     pubsub.subscribe('snapshot')
@@ -239,10 +246,12 @@ def main(argv):
         # connection with nodes from a new snapshot.
         if msg['channel'] == 'snapshot' and msg['type'] == 'message':
             timestamp = int(msg['data'])
-            logging.info("Timestamp: {}".format(timestamp))
+            logging.info("Timestamp: %d", timestamp)
             nodes = REDIS_CONN.smembers('opendata')
-            logging.info("Nodes: {}".format(len(nodes)))
-            resolve_nodes(nodes)
+            logging.info("Nodes: %d", len(nodes))
+            addresses = set([eval(node)[0] for node in nodes])
+            resolve = Resolve(addresses=addresses)
+            resolve.resolve_addresses()
             REDIS_CONN.publish('resolve', timestamp)
 
     return 0
